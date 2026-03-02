@@ -1,2 +1,2 @@
 # fClaHyb_analysis
-Analysis workflows for the F1 Thai hybrid catfish genome, hatchery population genomics of North African catfish, phylogenomics, ancestral karyotype reconstruction, and polymorphic inversion analyses.
+This repository contains the active analysis workflows for **the F1 Thai hybrid catfish genome** (*Clarias macrocephalus × Clarias gariepinus*), **hatchery resequencing population genomics of North African catfish** (*Clarias gariepinus*), and downstream comparative analyses including **phylogenomics**, **ancestral karyotype reconstruction**, and **polymorphic inversion discovery and interpretation**. It serves as the main technical workflow repository for reproducible downstream analysis built around the public **fClaHyb** genome resource.
