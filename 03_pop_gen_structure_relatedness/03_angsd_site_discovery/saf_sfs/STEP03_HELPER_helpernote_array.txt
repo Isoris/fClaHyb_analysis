@@ -1,0 +1,6 @@
+BASE="/scratch/lt200308-agbsci/Quentin_project_KEEP_2026-02-04"
+OUTDIR="${BASE}/popstruct_global"
+N=$(wc -l < "${OUTDIR}/chunk_rf.list")
+echo "N=$N"
+
+sbatch --array=0-$((N-1))%8 STEP03_run_angsd_saf_chunks_v3.slurm "${OUTDIR}/chunk_rf.list"
