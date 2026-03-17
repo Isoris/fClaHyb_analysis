@@ -1,0 +1,90 @@
+###
+# qc_depth_table.slurm does this:
+# Computes per-BAM coverage and breadth metrics from batch00-02 BAM files,
+# adds basic flagstat-derived mapping and duplicate percentages, and writes
+# a tabular depth summary for quick QC.
+###
+#!/usr/bin/env bash
+#SBATCH -p compute
+#SBATCH -N 1
+#SBATCH -n 32
+#SBATCH --mem=64GB
+#SBATCH -t 1-00:00:00
+#SBATCH -J depth_table
+#SBATCH -o depth_table.%j.out
+#SBATCH -e depth_table.%j.err
+
+set -euo pipefail
+source ~/.bashrc
+mamba activate assembly
+
+BASE="/scratch/lt200308-agbsci/Quentin_project/01-minimap2-bams"
+REF="/scratch/lt200308-agbsci/Quentin_project/00-samples/fClaHyb_Gar_LG.fa"
+OUTDIR="${BASE}/qc"
+THREADS="${SLURM_NTASKS:-32}"
+
+mkdir -p "$OUTDIR"
+
+# Contigs list = from the reference .fai (recommended: only your main LG/Chr contigs are in this ref)
+FAI="${REF}.fai"
+if [[ ! -s "$FAI" ]]; then
+  samtools faidx "$REF"
+fi
+
+# Regions file for samtools coverage (-b uses BED; we create BED from fai)
+BED="${OUTDIR}/ref.contigs.bed"
+awk 'BEGIN{OFS="\t"}{print $1,0,$2}' "$FAI" > "$BED"
+
+OUT="${OUTDIR}/coverage_summary.batch00-02.tsv"
+echo -e "id\tbam\tmean_depth_x\tbreadth_1x\tbreadth_5x\tbreadth_10x\tmapped_reads\tmapped_pct\tproperly_paired_pct\tdup_pct" > "$OUT"
+
+shopt -s nullglob
+BAMS=( "$BASE"/batch00/*.bam "$BASE"/batch01/*.bam "$BASE"/batch02/*.bam )
+
+if [[ ${#BAMS[@]} -eq 0 ]]; then
+  echo "[ERROR] No BAMs found in $BASE/batch00-02" >&2
+  exit 1
+fi
+
+for bam in "${BAMS[@]}"; do
+  id="$(basename "$bam" .bam)"
+
+  # 1) Coverage + breadth from samtools coverage
+  # Output has header lines starting with #; last line is "total"
+  cov_line=$(samtools coverage -@ "$THREADS" -b "$BED" "$bam" | awk '$1=="total"{print}')
+  mean_depth=$(echo "$cov_line" | awk '{print $7}')   # mean depth
+  breadth_1x=$(echo "$cov_line" | awk '{print $6}')   # fraction covered >=1x
+
+  # breadth at 5x and 10x using per-base depth histogram via samtools depth
+  b5=$(samtools depth -a -@ "$THREADS" -b "$BED" "$bam" \
+        | awk '{d=$3; tot++; if(d>=5) ge++} END{if(tot>0) printf("%.6f", ge/tot); else print "NA"}')
+  b10=$(samtools depth -a -@ "$THREADS" -b "$BED" "$bam" \
+        | awk '{d=$3; tot++; if(d>=10) ge++} END{if(tot>0) printf("%.6f", ge/tot); else print "NA"}')
+
+  # 2) Mapping stats from samtools flagstat
+  flagstat_tmp="${OUTDIR}/${id}.flagstat.txt"
+  samtools flagstat -@ "$THREADS" "$bam" > "$flagstat_tmp"
+
+  total_reads=$(awk '/in total/{print $1}' "$flagstat_tmp")
+  mapped_reads=$(awk '/ mapped \(/ && !/primary mapped/{print $1; exit}' "$flagstat_tmp")
+  mapped_pct=$(awk '/ mapped \(/ && !/primary mapped/{gsub(/[()%]/,"",$5); print $5; exit}' "$flagstat_tmp")
+  pp_pct=$(awk '/properly paired/{gsub(/[()%]/,"",$6); print $6; exit}' "$flagstat_tmp")
+  [[ -z "${pp_pct:-}" ]] && pp_pct="NA"
+
+  # 3) Duplicate % if duplicates are marked (uses flagstat "duplicates" line)
+  dup_line=$(awk '/duplicates/{print}' "$flagstat_tmp" || true)
+  if [[ -n "$dup_line" ]]; then
+    dup_reads=$(echo "$dup_line" | awk '{print $1}')
+    if [[ "$total_reads" -gt 0 ]]; then
+      dup_pct=$(awk -v d="$dup_reads" -v t="$total_reads" 'BEGIN{printf("%.3f", 100*d/t)}')
+    else
+      dup_pct="NA"
+    fi
+  else
+    dup_pct="NA"
+  fi
+
+  echo -e "${id}\t${bam}\t${mean_depth}\t${breadth_1x}\t${b5}\t${b10}\t${mapped_reads}\t${mapped_pct}\t${pp_pct}\t${dup_pct}" >> "$OUT"
+done
+
+echo "[DONE] Wrote: $OUT"

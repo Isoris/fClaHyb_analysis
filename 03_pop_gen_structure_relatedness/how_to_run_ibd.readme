@@ -1,0 +1,34 @@
+#1) Convert ngsF-HMM .ibd → BED tracts
+#   (one time, for all fish)
+
+perl convert_ibd.pl --ind samples.ind --pos positions.pos --ibd_pos results.ibd.gz > all_ibd_tracts.bed
+
+
+# 2) Summarize + bin + normalize + annotate
+python3 summarize_ibd_roh.py \
+  --tracts-bed all_ibd_tracts.bed \
+  --callable-bed callable.bed \
+  --repeats-bed repeats.bed \
+  --use-bedtools-intersect \
+  --out-prefix catfish_roh
+
+# With Q-matrix labels + ordering + relatedness:
+python3 summarize_ibd_roh.py \
+  --tracts-bed all_ibd_tracts.bed \
+  --callable-bed callable.bed \
+  --repeats-bed repeats.bed \
+  --use-bedtools-intersect \
+  --merge-gap 20000 \
+  --min-roh-bp 1000000 \
+  --q-matrix admixture.Q \
+  --q-has-sample-col \
+  --order-file covtree_leaf_order.txt \
+  --kinship relatedness.tsv \
+  --kin-threshold 0.0884 \
+  --out-prefix catfish_roh
+
+# Outputs
+
+catfish_roh.per_sample_roh.tsv (one row per fish, sorted)
+
+catfish_roh.per_sample_roh_bins_long.tsv (plot-ready long table for stacked bars)

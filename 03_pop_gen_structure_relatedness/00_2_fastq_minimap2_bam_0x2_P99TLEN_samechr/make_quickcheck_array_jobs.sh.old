@@ -1,0 +1,38 @@
+###
+# make_quickcheck_array_jobs.sh does this:
+# Builds a master list of final BAMs, splits them into array chunks,
+# and submits a samtools quickcheck SLURM array job.
+###
+#!/usr/bin/env bash
+set -euo pipefail
+
+BASE="/scratch/lt200308-agbsci/Quentin_project"
+BAMBASE="$BASE/01-minimap2-bams"
+OUTDIR="$BASE/01-minimap2-bams_qc_quickcheck"
+NJOBS="${1:-10}"
+
+mkdir -p "$OUTDIR/lists" "$OUTDIR/logs" "$OUTDIR/results"
+
+# 1) Build master BAM list (final BAMs only)
+find "$BAMBASE" -type f -name "*.sr.bam" ! -name "*.tmp.*" -size +0c \
+| sort > "$OUTDIR/all_bams.txt"
+
+N=$(wc -l < "$OUTDIR/all_bams.txt")
+echo "[INFO] Found $N BAMs in $BAMBASE"
+
+if [[ "$N" -eq 0 ]]; then
+  echo "[ERROR] No BAMs found." >&2
+  exit 1
+fi
+
+# 2) Split into NJOBS chunks
+split -d -n l/"$NJOBS" --additional-suffix=.txt \
+  "$OUTDIR/all_bams.txt" "$OUTDIR/lists/chunk_"
+
+echo "[INFO] Wrote chunks to $OUTDIR/lists/"
+ls -1 "$OUTDIR/lists"/chunk_*.txt | wc -l
+
+# 3) Submit array
+sbatch --array=0-$((NJOBS-1)) \
+  --export=ALL,BASE="$BASE",OUTDIR="$OUTDIR" \
+  "$BASE/samtools_quickcheck_array.slurm"
