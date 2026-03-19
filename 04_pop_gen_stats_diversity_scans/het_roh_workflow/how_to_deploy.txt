@@ -1,0 +1,18 @@
+# Extract into your existing workflow
+cd /scratch/lt200308-agbsci/Quentin_project_KEEP_2026-02-04/heterozygosity/het_roh_workflow/het_roh_workflow
+
+# Replace updated files
+cp breeding_module/scripts/00_config.sh scripts/
+cp breeding_module/scripts/02_run_heterozygosity.sh scripts/
+
+# Add new scripts
+cp breeding_module/scripts/07_build_breeding_tables.py scripts/
+cp breeding_module/scripts/08_run_breeding_module.sh scripts/
+cp breeding_module/scripts/plot_roh_genome_map.R scripts/
+cp breeding_module/scripts/plot_roh_recurrence.R scripts/
+cp breeding_module/scripts/plot_breeding_heatmaps.R scripts/
+
+# Run (after steps 01-05 are done)
+bash scripts/08_run_breeding_module.sh
+# For testing with limited pairs:
+bash scripts/08_run_breeding_module.sh --max-pairs 500
