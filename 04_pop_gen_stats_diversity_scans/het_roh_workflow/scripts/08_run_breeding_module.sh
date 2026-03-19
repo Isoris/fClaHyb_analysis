@@ -53,6 +53,7 @@ done
 
 # ── 1. Build breeding tables ────────────────────────────────────────────
 hr_log "Building breeding tables..."
+
 CMD=(
   python3 "${SCRIPTDIR}/07_build_breeding_tables.py"
   --tracts-bed "${TRACTS}"
@@ -63,13 +64,31 @@ CMD=(
   --sample-list "${SAMPLE_LIST}"
   --out-dir "${DIR_BREEDING}"
   --max-pairs "${MAX_PAIRS}"
-  --theta-scales ${THETA_SCALE_ARGS}
-  --theta-labels ${THETA_LABEL_ARGS}
-  --segment-sizes ${SEG_SIZE_ARGS}
-  --segment-labels ${SEG_LABEL_ARGS}
-  --recurrence-sizes ${REC_SIZE_ARGS}
-  --recurrence-labels ${REC_LABEL_ARGS}
+  --theta-scales "${THETA_SCALES[@]}"
+  --theta-labels "${THETA_LABELS[@]}"
+  --segment-sizes "${SEGMENT_SIZES[@]}"
+  --segment-labels "${SEGMENT_LABELS[@]}"
+  --recurrence-sizes "${RECURRENCE_WINDOWS[@]}"
+  --recurrence-labels "${RECURRENCE_LABELS[@]}"
 )
+
+#CMD=(
+#  python3 "${SCRIPTDIR}/07_build_breeding_tables.py"
+#  --tracts-bed "${TRACTS}"
+#  --callable-bed "${CALLABLE_BED}"
+#  --chrom-sizes "${CHROM_SIZES}"
+#  --theta-dir "${DIR_HET}/03_theta/multiscale"
+#  --theta-main-dir "${DIR_HET}/03_theta"
+#  --sample-list "${SAMPLE_LIST}"
+#  --out-dir "${DIR_BREEDING}"
+#  --max-pairs "${MAX_PAIRS}"
+#  --theta-scales ${THETA_SCALE_ARGS}
+#  --theta-labels ${THETA_LABEL_ARGS}
+#  --segment-sizes ${SEG_SIZE_ARGS}
+#  --segment-labels ${SEG_LABEL_ARGS}
+#  --recurrence-sizes ${REC_SIZE_ARGS}
+#  --recurrence-labels ${REC_LABEL_ARGS}
+#)
 
 if [[ -n "${ANCESTRY_LABELS}" && -f "${ANCESTRY_LABELS}" ]]; then
   CMD+=(--ancestry-labels "${ANCESTRY_LABELS}")

@@ -3,6 +3,12 @@
 """
 04_parse_roh_and_het.py — Convert .ibd → BED ROH, compute FROH, het in/out ROH
 
+v2 note:
+- fixed theta file matching so window size and step size are handled explicitly
+- fixed thetaStat .pestPG parsing for standard thetaStat do_stat output
+- fixed in/out-ROH window overlap logic to use real window start/stop when available
+- keeps the original workflow structure and outputs unchanged
+
 Wraps:
   1) convert_ibd.pl  → per-sample ROH BED tracts
   2) summarize_ibd_roh.py → ROH/FROH summary with bins
@@ -13,23 +19,25 @@ Usage:
   python3 04_parse_roh_and_het.py --config 00_config.sh
 
 Or with explicit paths:
-  python3 04_parse_roh_and_het.py \\
-    --ibd best.ibd \\
-    --pos main_qcpass.pos \\
-    --ind samples.ind \\
-    --callable-bed callable.bed \\
-    --repeats-bed repeats.bed \\
-    --het-summary genomewide_heterozygosity.tsv \\
-    --theta-dir 02_heterozygosity/03_theta \\
-    --out-dir 04_roh_summary \\
-    --tables-dir 09_final_tables \\
-    --convert-ibd-pl /path/to/convert_ibd.pl \\
+  python3 04_parse_roh_and_het.py \
+    --ibd best.ibd \
+    --pos main_qcpass.pos \
+    --ind samples.ind \
+    --callable-bed callable.bed \
+    --repeats-bed repeats.bed \
+    --het-summary genomewide_heterozygosity.tsv \
+    --theta-dir 02_heterozygosity/03_theta \
+    --out-dir 04_roh_summary \
+    --tables-dir 09_final_tables \
+    --convert-ibd-pl /path/to/convert_ibd.pl \
     --summarize-roh-py /path/to/summarize_ibd_roh.py
 """
 
 import argparse
 import csv
+import glob
 import os
+import shutil
 import subprocess
 import sys
 from collections import defaultdict
@@ -84,7 +92,6 @@ def compute_per_chr_roh(tracts_bed, callable_bed):
     Compute per-sample per-chromosome ROH summary.
     Returns: list of dicts with sample, chrom, roh_bp, n_tracts, longest_tract, callable_bp, froh_chr
     """
-    # Read callable spans per chrom
     callable_per_chr = defaultdict(int)
     with open(callable_bed) as f:
         for line in f:
@@ -96,7 +103,6 @@ def compute_per_chr_roh(tracts_bed, callable_bed):
             c = parts[0]
             callable_per_chr[c] += int(parts[2]) - int(parts[1])
 
-    # Read tracts: chr start end sample [length]
     per_sample_chr = defaultdict(lambda: defaultdict(list))
     with open(tracts_bed) as f:
         for line in f:
@@ -131,7 +137,127 @@ def compute_per_chr_roh(tracts_bed, callable_bed):
     return rows
 
 
-def compute_het_in_out_roh(theta_dir, tracts_bed, samples, win_size=500000):
+def find_theta_file(theta_dir, sample, win_size, step_size):
+    """
+    Find the expected thetaStat do_stat output for a sample at a specific scale.
+    Prefer exact win/step match, then a conservative fallback.
+    """
+    exact_candidates = [
+        os.path.join(theta_dir, f"{sample}.win{win_size}.step{step_size}.pestPG"),
+        os.path.join(theta_dir, f"{sample}.win{win_size}.step{step_size}.gz.pestPG"),
+    ]
+    for fp in exact_candidates:
+        if os.path.isfile(fp):
+            return fp
+
+    # Conservative fallback: only files with exact win/step embedded in basename
+    pattern = os.path.join(theta_dir, f"{sample}.win{win_size}.step{step_size}*.pestPG")
+    matches = sorted(glob.glob(pattern))
+    for fp in matches:
+        if os.path.isfile(fp):
+            return fp
+
+    return None
+
+
+def parse_theta_windows(theta_file, win_size=None, step_size=None):
+    """
+    Parse thetaStat do_stat output.
+
+    Expected standard header:
+    #(indexStart,indexStop)(firstPos_withData,lastPos_withData)(WinStart,WinStop) Chr WinCenter tW tP tF tH tL Tajima fuf fud fayh zeng nSites
+
+    Returns list of dicts with:
+      chrom, center, tp, nsites, theta_per_site, win_start, win_end
+    """
+    windows = []
+
+    with open(theta_file) as f:
+        header = f.readline().strip().split()
+
+        chr_idx = next((i for i, h in enumerate(header) if h.lower() in ("chr", "chromo", "chrom")), None)
+        center_idx = next((i for i, h in enumerate(header) if h.lower() in ("wincenter", "midpos")), None)
+        tp_idx = next((i for i, h in enumerate(header) if h.lower() in ("tp", "thetapi", "pi")), None)
+        nsites_idx = next((i for i, h in enumerate(header) if h.lower() in ("nsites", "nsite", "nsit")), None)
+
+        # thetaStat standard output often has the first region/debug tuple block in col0
+        # then Chr in col1 and WinCenter in col2.
+        if any(x is None for x in [chr_idx, center_idx, tp_idx]):
+            if len(header) >= 14 and ("wincenter" in [h.lower() for h in header] or "tp" in [h.lower() for h in header]):
+                # If header is present but detector failed, try standard positions
+                chr_idx = 1
+                center_idx = 2
+                tp_idx = 4
+                nsites_idx = len(header) - 1
+            elif len(header) >= 5:
+                # Generic fallback
+                chr_idx = 1 if len(header) > 1 else 0
+                center_idx = 2 if len(header) > 2 else 1
+                tp_idx = 4 if len(header) > 4 else 3
+                nsites_idx = len(header) - 1
+
+        if chr_idx is None or center_idx is None or tp_idx is None:
+            return windows
+
+        for line in f:
+            parts = line.strip().split()
+            if len(parts) <= max(chr_idx, center_idx, tp_idx):
+                continue
+
+            try:
+                chrom = parts[chr_idx]
+                center = int(float(parts[center_idx]))
+                tp = float(parts[tp_idx])
+                nsites = int(parts[nsites_idx]) if nsites_idx is not None and nsites_idx < len(parts) else 1
+            except (ValueError, IndexError):
+                continue
+
+            if nsites <= 0:
+                continue
+
+            # Standard thetaStat first field contains region tuples like:
+            # (0,98316)(14000032,14100082)(1,500001)
+            # or similar. We want the 3rd tuple = (WinStart,WinStop).
+            win_start = None
+            win_end = None
+
+            if parts and parts[0].startswith("(") and ")(" in parts[0]:
+                tuple_block = parts[0]
+                try:
+                    tuples = tuple_block.replace(")(", ")|(").split("|")
+                    if len(tuples) >= 3:
+                        third = tuples[2].strip("()")
+                        a, b = third.split(",")
+                        win_start = int(a)
+                        win_end = int(b)
+                except Exception:
+                    win_start = None
+                    win_end = None
+
+            # Fallback to center ± half window if needed
+            if win_start is None or win_end is None:
+                if win_size is not None:
+                    half_win = win_size // 2
+                    win_start = max(1, center - half_win)
+                    win_end = center + half_win
+                else:
+                    win_start = center
+                    win_end = center
+
+            windows.append({
+                "chrom": chrom,
+                "center": center,
+                "tp": tp,
+                "nsites": nsites,
+                "theta_per_site": tp / nsites,
+                "win_start": win_start,
+                "win_end": win_end,
+            })
+
+    return windows
+
+
+def compute_het_in_out_roh(theta_dir, tracts_bed, samples, win_size=500000, step_size=None):
     """
     For each sample, intersect local theta windows with ROH BED to compute
     mean theta (diversity proxy) inside ROH vs outside ROH.
@@ -139,8 +265,10 @@ def compute_het_in_out_roh(theta_dir, tracts_bed, samples, win_size=500000):
     Uses thetaStat window outputs already computed.
     Returns: dict of sample → {het_in_roh, het_out_roh, n_win_in, n_win_out}
     """
-    # Read all ROH tracts per sample
-    roh_per_sample = defaultdict(list)  # sample -> [(chr, start, end), ...]
+    if step_size is None:
+        step_size = win_size
+
+    roh_per_sample = defaultdict(list)
     with open(tracts_bed) as f:
         for line in f:
             if not line.strip() or line.startswith("#"):
@@ -153,23 +281,7 @@ def compute_het_in_out_roh(theta_dir, tracts_bed, samples, win_size=500000):
 
     results = {}
     for sample in samples:
-        # Find theta window file
-        # Pattern: {sample}.win500000.step500000.pestPG
-        # thetaStat do_stat output is named differently per ANGSD version
-        theta_candidates = [
-            os.path.join(theta_dir, f"{sample}.win{win_size}.step{win_size}.pestPG"),
-            os.path.join(theta_dir, f"{sample}.win{win_size}.step{win_size}.gz.pestPG"),
-        ]
-        # Also try globbing
-        import glob
-        theta_glob = glob.glob(os.path.join(theta_dir, f"{sample}.win*step*.pestPG"))
-        theta_candidates.extend(theta_glob)
-
-        theta_file = None
-        for tc in theta_candidates:
-            if os.path.isfile(tc):
-                theta_file = tc
-                break
+        theta_file = find_theta_file(theta_dir, sample, win_size, step_size)
 
         if theta_file is None:
             results[sample] = {
@@ -180,66 +292,36 @@ def compute_het_in_out_roh(theta_dir, tracts_bed, samples, win_size=500000):
             }
             continue
 
-        # Read theta windows
-        windows = []
-        with open(theta_file) as f:
-            header = f.readline().strip().split()
-            # Find columns: (chr|Chromo), WinCenter, tW, tP, nSites
-            chr_idx = next((i for i, h in enumerate(header) if h.lower() in ("chr", "chromo", "chrom")), None)
-            center_idx = next((i for i, h in enumerate(header) if h.lower() in ("wincenter", "midpos")), None)
-            tp_idx = next((i for i, h in enumerate(header) if h.lower() in ("tp", "thetapi", "pi")), None)
-            nsites_idx = next((i for i, h in enumerate(header) if h.lower() in ("nsites", "nsite", "nsit")), None)
+        windows = parse_theta_windows(theta_file, win_size=win_size, step_size=step_size)
 
-            if any(x is None for x in [chr_idx, center_idx, tp_idx]):
-                # Try positional fallback for thetaStat do_stat standard output
-                # Standard columns: (indexStart indexStop) Chromo WinCenter tW tP tF tH tL Tajima fuf fud fayh zeng nSites
-                # or: Chr WinCenter tW tP ...
-                if len(header) >= 5:
-                    chr_idx = 0
-                    center_idx = 1
-                    tp_idx = 3  # tP
-                    nsites_idx = len(header) - 1 if header[-1].lower().startswith("nsite") else None
+        if not windows:
+            results[sample] = {
+                "het_proxy_in_roh": None,
+                "het_proxy_out_roh": None,
+                "n_win_in": 0,
+                "n_win_out": 0,
+            }
+            continue
 
-            if chr_idx is None or center_idx is None or tp_idx is None:
-                results[sample] = {
-                    "het_proxy_in_roh": None,
-                    "het_proxy_out_roh": None,
-                    "n_win_in": 0,
-                    "n_win_out": 0,
-                }
-                continue
-
-            for line in f:
-                parts = line.strip().split()
-                if len(parts) <= max(chr_idx, center_idx, tp_idx):
-                    continue
-                try:
-                    chrom = parts[chr_idx]
-                    center = int(float(parts[center_idx]))
-                    tp = float(parts[tp_idx])
-                    nsites = int(parts[nsites_idx]) if nsites_idx is not None and nsites_idx < len(parts) else 1
-                except (ValueError, IndexError):
-                    continue
-                if nsites > 0:
-                    windows.append((chrom, center, tp / nsites, nsites))
-
-        # Classify windows as in/out ROH
         roh_intervals = roh_per_sample.get(sample, [])
         in_vals = []
         out_vals = []
-        half_win = win_size // 2
 
-        for chrom, center, theta_per_site, nsites in windows:
-            wstart = center - half_win
-            wend = center + half_win
+        for w in windows:
+            chrom = w["chrom"]
+            wstart = w["win_start"]
+            wend = w["win_end"]
+            theta_per_site = w["theta_per_site"]
+
             in_roh = False
             for rc, rs, re in roh_intervals:
                 if rc == chrom and rs < wend and re > wstart:
-                    # Overlap
                     overlap = min(wend, re) - max(wstart, rs)
-                    if overlap > half_win:  # majority overlap
+                    win_span = max(1, wend - wstart)
+                    if overlap > (win_span / 2.0):
                         in_roh = True
                         break
+
             if in_roh:
                 in_vals.append(theta_per_site)
             else:
@@ -269,7 +351,8 @@ def main():
     ap.add_argument("--tables-dir", required=True, help="Final tables output directory")
     ap.add_argument("--convert-ibd-pl", required=True, help="Path to convert_ibd.pl")
     ap.add_argument("--summarize-roh-py", required=True, help="Path to summarize_ibd_roh.py")
-    ap.add_argument("--win-size", type=int, default=500000, help="Window size for theta (must match thetaStat)")
+    ap.add_argument("--win-size", type=int, default=500000, help="Theta window size (must match thetaStat do_stat)")
+    ap.add_argument("--step-size", type=int, default=None, help="Theta step size (default: same as win-size)")
 
     # Optional metadata for summarize_ibd_roh.py
     ap.add_argument("--q-matrix", default="", help="Q matrix file")
@@ -278,6 +361,9 @@ def main():
     ap.add_argument("--kinship", default="", help="Kinship/relatedness table")
 
     args = ap.parse_args()
+
+    if args.step_size is None:
+        args.step_size = args.win_size
 
     os.makedirs(args.out_dir, exist_ok=True)
     os.makedirs(args.tables_dir, exist_ok=True)
@@ -325,9 +411,11 @@ def main():
 
     per_chr_roh = os.path.join(args.tables_dir, "per_chr_roh_summary.tsv")
     with open(per_chr_roh, "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=["sample", "chrom", "roh_bp", "n_tracts",
-                                           "longest_tract", "callable_bp_chr", "froh_chr"],
-                           delimiter="\t")
+        w = csv.DictWriter(
+            f,
+            fieldnames=["sample", "chrom", "roh_bp", "n_tracts", "longest_tract", "callable_bp_chr", "froh_chr"],
+            delimiter="\t"
+        )
         w.writeheader()
         w.writerows(chr_rows)
     print(f"  Wrote {per_chr_roh} ({len(chr_rows)} rows)")
@@ -353,7 +441,6 @@ def main():
             if length > d["longest"]:
                 d["longest"] = length
 
-    # Read callable total
     callable_bp = 0
     with open(args.callable_bed) as f:
         for line in f:
@@ -367,8 +454,8 @@ def main():
     with open(per_sample_roh_tsv, "w", newline="") as f:
         w = csv.writer(f, delimiter="\t")
         w.writerow(["sample", "roh_total_bp", "n_tracts", "longest_roh",
-                     "mean_roh_length", "median_roh_length", "froh",
-                     "callable_bp"])
+                    "mean_roh_length", "median_roh_length", "froh",
+                    "callable_bp"])
         for sname in sorted(sample_roh.keys()):
             d = sample_roh[sname]
             lengths = sorted(d["lengths"])
@@ -389,13 +476,19 @@ def main():
             if s:
                 samples.append(s)
 
-    het_inout = compute_het_in_out_roh(args.theta_dir, tracts_bed, samples, args.win_size)
+    het_inout = compute_het_in_out_roh(
+        args.theta_dir,
+        tracts_bed,
+        samples,
+        win_size=args.win_size,
+        step_size=args.step_size
+    )
 
     het_inout_tsv = os.path.join(args.tables_dir, "per_sample_het_in_out_roh.tsv")
     with open(het_inout_tsv, "w", newline="") as f:
         w = csv.writer(f, delimiter="\t")
         w.writerow(["sample", "theta_proxy_in_roh", "theta_proxy_out_roh",
-                     "n_windows_in_roh", "n_windows_out_roh", "ratio_in_out"])
+                    "n_windows_in_roh", "n_windows_out_roh", "ratio_in_out"])
         for s in sorted(het_inout.keys()):
             d = het_inout[s]
             hin = d["het_proxy_in_roh"]
@@ -452,13 +545,11 @@ def main():
     print(f"  Wrote {master_tsv}")
 
     # ── Copy key files to tables dir ──────────────────────────────────────
-    import shutil
     for src_name in ["catfish_roh.per_sample_roh.tsv", "catfish_roh.per_sample_roh_bins_long.tsv"]:
         src = os.path.join(args.out_dir, src_name)
         if os.path.isfile(src):
             shutil.copy2(src, os.path.join(args.tables_dir, src_name))
 
-    # Copy tracts BED
     shutil.copy2(tracts_bed, os.path.join(args.tables_dir, "roh_tracts_all.bed"))
 
     print("\n=== Step 4 (parse_roh_and_het) complete ===")
