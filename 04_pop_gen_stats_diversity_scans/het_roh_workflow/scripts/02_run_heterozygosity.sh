@@ -1,15 +1,9 @@
 #!/usr/bin/env bash
+# v2 note: uses -type 2 for physical windows; loops THETA_SCALES from config;
+#          removed thetaStat make_bed (not always available); optional thetaStat print
 # =============================================================================
 # 02_run_heterozygosity.sh — Per-sample genome-wide het + local theta tracks
 # =============================================================================
-# For each QC-passing sample:
-#   1) ANGSD -GL 1 -doSaf 1 -fold 1 -sites callable  → SAF
-#   2) realSFS                                         → est.ml
-#   3) Genome-wide het = SFS[1] / sum(SFS)
-#   4) ANGSD rerun with -pest est.ml -doThetas 1
-#   5) thetaStat make_bed + do_stat                    → local theta tracks
-#   6) Optional: multiscale theta windows (5kb/1kb, 10kb/2kb, 50kb/10kb)
-#
 # NOTE: Local theta tracks are diversity proxies, NOT literal per-site Hobs.
 #
 # Usage:
@@ -38,10 +32,6 @@ hr_check_cmd thetaStat
 HET_SUMMARY="${DIR_HET}/04_summary/genomewide_heterozygosity.tsv"
 if [[ ! -f "${HET_SUMMARY}" ]]; then
   echo -e "sample\thet_genomewide\tn_sites_sfs\tsfs_bin0\tsfs_bin1" > "${HET_SUMMARY}"
-fi
-
-if [[ "${RUN_EXTRA_THETA_SCALES:-0}" -eq 1 ]]; then
-  mkdir -p "${DIR_HET}/03_theta/multiscale"
 fi
 
 # ── Build sample-to-BAM lookup ──────────────────────────────────────────────
@@ -75,7 +65,7 @@ while read -r SAMPLE; do
   fi
 
   # ── Step 1: SAF ────────────────────────────────────────────────────────
-  hr_log "  [1/5] SAF estimation..."
+  hr_log "  [1/4] SAF estimation..."
   angsd \
     -i "${BAM}" \
     -ref "${REF}" \
@@ -92,7 +82,7 @@ while read -r SAMPLE; do
     2> "${DIR_LOGS}/${SAMPLE}.saf.log"
 
   # ── Step 2: realSFS → est.ml ───────────────────────────────────────────
-  hr_log "  [2/5] realSFS..."
+  hr_log "  [2/4] realSFS..."
   realSFS \
     "${DIR_HET}/01_saf/${SAMPLE}.saf.idx" \
     -maxIter "${REALSFS_MAXITER}" \
@@ -101,8 +91,8 @@ while read -r SAMPLE; do
     > "${DIR_HET}/02_sfs/${SAMPLE}.est.ml" \
     2> "${DIR_LOGS}/${SAMPLE}.realsfs.log"
 
-  # ── Step 3: Genome-wide het ────────────────────────────────────────────
-  hr_log "  [3/5] Computing genome-wide heterozygosity..."
+  # ── Step 3: Genome-wide het from SFS ───────────────────────────────────
+  hr_log "  [3/4] Computing genome-wide heterozygosity..."
   HET=$(awk '{
     sum=0; for(i=1;i<=NF;i++) sum+=$i;
     if(sum>0) printf "%.12g\t%d\t%.6f\t%.6f", $2/sum, sum, $1, $2;
@@ -116,8 +106,8 @@ while read -r SAMPLE; do
     fi
   ) 200>"${HET_SUMMARY}.lock"
 
-  # ── Step 4: Local theta with -pest ─────────────────────────────────────
-  hr_log "  [4/5] Local theta estimation (diversity proxy)..."
+  # ── Step 4: Local theta with -pest + thetaStat windows ────────────────
+  hr_log "  [4/4] Local theta estimation (diversity proxy)..."
   angsd \
     -i "${BAM}" \
     -ref "${REF}" \
@@ -135,29 +125,22 @@ while read -r SAMPLE; do
     -out "${DIR_HET}/03_theta/${SAMPLE}" \
     2> "${DIR_LOGS}/${SAMPLE}.theta.log"
 
-  # ── Step 5: thetaStat (main windows) ──────────────────────────────────
-  hr_log "  [5/5] thetaStat..."
-
-  # ── Step 5: thetaStat raw per-site + main windows ─────────────────────
-  hr_log "  [5/5] thetaStat..."
-
-  # Raw per-site theta output (one time only; independent of window scale)
-  # Useful later if you want to inspect informative sites directly or build
-  # downstream site-based filters / segment extractors.
-# // not needed for now.
-#  thetaStat print \
-#    "${DIR_HET}/03_theta/${SAMPLE}.thetas.idx" \
-#    > "${DIR_HET}/03_theta/${SAMPLE}.per_site.theta.tsv"
-
-  # Main windowed theta, anchored at chromosome position 1
+  # Main windowed theta (500kb / 500kb, physical anchored windows via -type 2)
   thetaStat do_stat \
     "${DIR_HET}/03_theta/${SAMPLE}.thetas.idx" \
     -win "${WIN}" -step "${STEP}" -type 2 \
     -outnames "${DIR_HET}/03_theta/${SAMPLE}.win${WIN}.step${STEP}"
 
-  # ── Step 6: Multiscale theta windows ──────────────────────────────────
+  # Optional: thetaStat print for per-informative-site raw output (diagnostic only)
+  # Produces log-scale per-site theta values. Large files; mostly for debugging.
+  # Uncomment if needed:
+  # thetaStat print \
+  #   "${DIR_HET}/03_theta/${SAMPLE}.thetas.idx" \
+  #   > "${DIR_HET}/03_theta/${SAMPLE}.thetas.print.tsv"
+
+  # ── Multiscale theta windows ──────────────────────────────────────────
   if [[ "${RUN_EXTRA_THETA_SCALES:-0}" -eq 1 ]]; then
-    hr_log "  [6/5] Extra theta scales..."
+    hr_log "  Extra theta scales: ${THETA_SCALE_LABELS[*]}..."
     MS_DIR="${DIR_HET}/03_theta/multiscale"
 
     for i in "${!THETA_SCALES[@]}"; do
@@ -184,7 +167,7 @@ fi
 
 hr_log "=== Step 02 complete ==="
 hr_log "Summary: ${HET_SUMMARY}"
-hr_log "Theta windows: ${DIR_HET}/03_theta/*.win${WIN}.step${STEP}.*"
+hr_log "Main theta: ${DIR_HET}/03_theta/*.win${WIN}.step${STEP}.*"
 if [[ "${RUN_EXTRA_THETA_SCALES:-0}" -eq 1 ]]; then
-  hr_log "Extra scales:  ${DIR_HET}/03_theta/multiscale/"
+  hr_log "Multiscale: ${DIR_HET}/03_theta/multiscale/"
 fi

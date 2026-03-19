@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# v2 note: passes per_chr + breeding_dir to run_stats.R; adds multiscale theta ideogram loop
 # =============================================================================
 # 05_run_all_plots.sh — Run all plotting + statistics scripts
 # =============================================================================
@@ -9,7 +10,6 @@ hr_init_dirs
 
 hr_log "=== Step 05: Run all plots and statistics ==="
 
-# ── Check R packages ─────────────────────────────────────────────────────
 Rscript -e 'for(p in c("data.table","ggplot2")) if(!require(p, character.only=TRUE)) stop(paste("Missing R package:", p))' || {
   hr_die "Missing required R packages: data.table, ggplot2"
 }
@@ -26,37 +26,28 @@ hr_check_file "${MASTER}" "master_summary.tsv"
 hr_log "Running plot_heterozygosity_core.R..."
 if [[ -f "${HET_TSV}" ]]; then
   Rscript "${SCRIPTDIR}/plot_heterozygosity_core.R" \
-    "${HET_TSV}" \
-    "${DIR_PLOTS_CORE}" \
+    "${HET_TSV}" "${DIR_PLOTS_CORE}" \
     ${ANCESTRY_LABELS:+"${ANCESTRY_LABELS}"} \
     2>&1 | tee "${DIR_LOGS}/plot_het_core.log"
-else
-  hr_log "  Skipping (no het summary TSV)"
 fi
 
 # ── 2. Core ROH plots ──────────────────────────────────────────────────
 hr_log "Running plot_roh_core.R..."
 if [[ -f "${BINS}" ]]; then
   Rscript "${SCRIPTDIR}/plot_roh_core.R" \
-    "${MASTER}" \
-    "${BINS}" \
-    "${DIR_PLOTS_CORE}" \
+    "${MASTER}" "${BINS}" "${DIR_PLOTS_CORE}" \
     2>&1 | tee "${DIR_LOGS}/plot_roh_core.log"
 else
-  # Try without bins
   Rscript "${SCRIPTDIR}/plot_roh_core.R" \
-    "${MASTER}" \
-    "/dev/null" \
-    "${DIR_PLOTS_CORE}" \
+    "${MASTER}" "/dev/null" "${DIR_PLOTS_CORE}" \
     2>&1 | tee "${DIR_LOGS}/plot_roh_core.log" || true
 fi
 
 # ── 3. Scatter plots ───────────────────────────────────────────────────
 hr_log "Running plot_scatter_stats.R..."
 Rscript "${SCRIPTDIR}/plot_scatter_stats.R" \
-  "${MASTER}" \
-  "${DIR_PLOTS_CORE}" \
-  ${SAMPLE_QC_TABLE:+"${SAMPLE_QC_TABLE}"} \
+  "${MASTER}" "${DIR_PLOTS_CORE}" \
+  ${SAMPLE_QC_TABLE:+""} \
   ${ANCESTRY_LABELS:+"${ANCESTRY_LABELS}"} \
   2>&1 | tee "${DIR_LOGS}/plot_scatter.log"
 
@@ -64,48 +55,33 @@ Rscript "${SCRIPTDIR}/plot_scatter_stats.R" \
 hr_log "Running plot_roh_by_chromosome.R..."
 if [[ -f "${PER_CHR}" ]]; then
   Rscript "${SCRIPTDIR}/plot_roh_by_chromosome.R" \
-    "${PER_CHR}" \
-    "${DIR_PLOTS_CORE}" \
+    "${PER_CHR}" "${DIR_PLOTS_CORE}" \
     ${CHROM_SIZES:+"${CHROM_SIZES}"} \
     ${ANCESTRY_LABELS:+"${ANCESTRY_LABELS}"} \
     2>&1 | tee "${DIR_LOGS}/plot_chr.log"
-else
-  hr_log "  Skipping (no per_chr_roh_summary.tsv)"
 fi
 
-# ── 5. Theta ideogram plots ──────────────────────────────────────────
-hr_log "Running plot_theta_ideogram.R..."
+# ── 5. Theta ideogram plots (main + multiscale) ─────────────────────
+hr_log "Running plot_theta_ideogram.R (main scale)..."
+if [[ -d "${DIR_HET}/03_theta" && -f "${CHROM_SIZES}" ]]; then
+  Rscript "${SCRIPTDIR}/plot_theta_ideogram.R" \
+    "${DIR_HET}/03_theta" "${CHROM_SIZES}" "${DIR_PLOTS_CORE}" \
+    "${SAMPLE_LIST}" 10 \
+    2>&1 | tee "${DIR_LOGS}/plot_ideogram_main.log"
 
-if [[ -f "${CHROM_SIZES}" ]]; then
-  # Main theta directory
-  if [[ -d "${DIR_HET}/03_theta" ]]; then
-    hr_log "  Theta plots: main directory"
-    Rscript "${SCRIPTDIR}/plot_theta_ideogram.R" \
-      "${DIR_HET}/03_theta" \
-      "${CHROM_SIZES}" \
-      "${DIR_PLOTS_CORE}/theta_main" \
-      "${SAMPLE_LIST}" \
-      10 \
-      2>&1 | tee "${DIR_LOGS}/plot_ideogram_main.log"
-  else
-    hr_log "  Skipping main theta plots (directory missing)"
+  # Multiscale theta ideograms
+  if [[ "${RUN_EXTRA_THETA_SCALES:-0}" -eq 1 && -d "${DIR_HET}/03_theta/multiscale" ]]; then
+    for i in "${!THETA_SCALE_LABELS[@]}"; do
+      LABEL="${THETA_SCALE_LABELS[$i]}"
+      hr_log "  Theta ideogram: ${LABEL}..."
+      MS_OUT="${DIR_PLOTS_CORE}/theta_${LABEL}"
+      mkdir -p "${MS_OUT}"
+      Rscript "${SCRIPTDIR}/plot_theta_ideogram.R" \
+        "${DIR_HET}/03_theta/multiscale" "${CHROM_SIZES}" "${MS_OUT}" \
+        "${SAMPLE_LIST}" 10 \
+        2>&1 | tee "${DIR_LOGS}/plot_ideogram_${LABEL}.log" || true
+    done
   fi
-
-  # Multiscale theta directory
-  if [[ -d "${DIR_HET}/03_theta/multiscale" ]]; then
-    hr_log "  Theta plots: multiscale directory"
-    Rscript "${SCRIPTDIR}/plot_theta_ideogram.R" \
-      "${DIR_HET}/03_theta/multiscale" \
-      "${CHROM_SIZES}" \
-      "${DIR_PLOTS_CORE}/theta_multiscale" \
-      "${SAMPLE_LIST}" \
-      10 \
-      2>&1 | tee "${DIR_LOGS}/plot_ideogram_multiscale.log"
-  else
-    hr_log "  Skipping multiscale theta plots (directory missing)"
-  fi
-else
-  hr_log "  Skipping theta plots (chrom_sizes missing)"
 fi
 
 # ── 6. Metadata overlay plots ────────────────────────────────────────
@@ -126,22 +102,31 @@ fi
 
 if [[ -f "${PER_CHR}" ]]; then
   Rscript "${SCRIPTDIR}/plot_roh_metadata_overlays.R" \
-    "${MASTER}" \
-    "${PER_CHR}" \
-    "${BINS:-/dev/null}" \
-    "${DIR_PLOTS_META}" \
+    "${MASTER}" "${PER_CHR}" "${BINS:-/dev/null}" "${DIR_PLOTS_META}" \
     "${META_ARGS[@]}" \
     2>&1 | tee "${DIR_LOGS}/plot_metadata.log"
-else
-  hr_log "  Skipping metadata overlays (missing per_chr table)"
 fi
 
-# ── 7. Statistics ────────────────────────────────────────────────────
+# ── 7. Statistics (v2: now with chr-level and theta-scale stats) ─────
 hr_log "Running run_stats.R..."
-Rscript "${SCRIPTDIR}/run_stats.R" \
-  "${MASTER}" \
-  "${DIR_STATS}" \
-  ${ANCESTRY_LABELS:+"${ANCESTRY_LABELS}"} \
+STATS_ARGS=("${MASTER}" "${DIR_STATS}")
+if [[ -n "${ANCESTRY_LABELS}" && -f "${ANCESTRY_LABELS}" ]]; then
+  STATS_ARGS+=("${ANCESTRY_LABELS}")
+else
+  STATS_ARGS+=("")
+fi
+if [[ -f "${PER_CHR}" ]]; then
+  STATS_ARGS+=("${PER_CHR}")
+else
+  STATS_ARGS+=("")
+fi
+if [[ -d "${DIR_BREEDING}" ]]; then
+  STATS_ARGS+=("${DIR_BREEDING}")
+else
+  STATS_ARGS+=("")
+fi
+
+Rscript "${SCRIPTDIR}/run_stats.R" "${STATS_ARGS[@]}" \
   2>&1 | tee "${DIR_LOGS}/run_stats.log"
 
 # ── 8. Report ────────────────────────────────────────────────────────
@@ -154,7 +139,3 @@ python3 "${SCRIPTDIR}/06_write_report.py" \
   2>&1 | tee "${DIR_LOGS}/write_report.log"
 
 hr_log "=== Step 05 complete ==="
-hr_log "Core plots:     ${DIR_PLOTS_CORE}"
-hr_log "Metadata plots: ${DIR_PLOTS_META}"
-hr_log "Statistics:     ${DIR_STATS}"
-hr_log "Report:         ${DIR_REPORT}"

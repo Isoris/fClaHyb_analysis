@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# v2 note: added THETA_SCALES, SEGMENT_*, RECURRENCE_*, DIR_BREEDING, DIR_PLOTS_BREEDING
 # =============================================================================
 # 00_config.sh — Central configuration for heterozygosity + ROH/FROH workflow
 # =============================================================================
@@ -90,7 +91,7 @@ STEP=500000
 # ── Multiscale theta windows ─────────────────────────────────────────────
 RUN_EXTRA_THETA_SCALES=1
 
-# Theta scale definitions: "win_step" pairs produced by step 02
+# Theta scale definitions: "win_step" pairs; labels for filenames
 THETA_SCALES=("5000_1000" "10000_2000" "50000_10000")
 THETA_SCALE_LABELS=("5kb_1kb" "10kb_2kb" "50kb_10kb")
 
