@@ -56,23 +56,10 @@ def open_run(pos: int, state: RunState):
 
 
 def flush_contig(
-    chrom: str,
-    pos: int,
-    hard_state: RunState,
-    soft_state: RunState,
-    norm_state: RunState,
-    mask_state: RunState,
-    inversion_state: RunState,
-    hard_out: TextIO,
-    soft_out: TextIO,
-    norm_out: TextIO,
-    mask_out: TextIO,
-    inversion_out: TextIO,
-    hard_t: TrackStats,
-    soft_t: TrackStats,
-    norm_t: TrackStats,
-    mask_t: TrackStats,
-    inversion_t: TrackStats,
+    chrom, pos,
+    hard_state, soft_state, norm_state, mask_state, inversion_state,
+    hard_out, soft_out, norm_out, mask_out, inversion_out,
+    hard_t, soft_t, norm_t, mask_t, inversion_t,
 ):
     close_run(chrom, pos, hard_state, hard_out, "hardN", hard_t)
     close_run(chrom, pos, soft_state, soft_out, "softacgt", soft_t)
@@ -168,57 +155,28 @@ def main():
                             hard_out, soft_out, norm_out, mask_out, inversion_out,
                             hard_t, soft_t, norm_t, mask_t, inversion_t
                         )
-
                         write_contig_stats(
                             chrom, pos,
                             bp_hard, bp_soft, bp_norm, bp_mask, bp_inversion, bp_other,
                             hard_t, soft_t, norm_t, mask_t, inversion_t
                         )
-
                         tot_len += pos
-                        tot_hard += bp_hard
-                        tot_soft += bp_soft
-                        tot_norm += bp_norm
-                        tot_mask += bp_mask
-                        tot_inversion += bp_inversion
-                        tot_other += bp_other
-
-                        tot_hard_t.bp += hard_t.bp
-                        tot_hard_t.n_intervals += hard_t.n_intervals
-                        tot_hard_t.max_len = max(tot_hard_t.max_len, hard_t.max_len)
-
-                        tot_soft_t.bp += soft_t.bp
-                        tot_soft_t.n_intervals += soft_t.n_intervals
-                        tot_soft_t.max_len = max(tot_soft_t.max_len, soft_t.max_len)
-
-                        tot_norm_t.bp += norm_t.bp
-                        tot_norm_t.n_intervals += norm_t.n_intervals
-                        tot_norm_t.max_len = max(tot_norm_t.max_len, norm_t.max_len)
-
-                        tot_mask_t.bp += mask_t.bp
-                        tot_mask_t.n_intervals += mask_t.n_intervals
-                        tot_mask_t.max_len = max(tot_mask_t.max_len, mask_t.max_len)
-
-                        tot_inversion_t.bp += inversion_t.bp
-                        tot_inversion_t.n_intervals += inversion_t.n_intervals
-                        tot_inversion_t.max_len = max(tot_inversion_t.max_len, inversion_t.max_len)
+                        tot_hard += bp_hard; tot_soft += bp_soft; tot_norm += bp_norm
+                        tot_mask += bp_mask; tot_inversion += bp_inversion; tot_other += bp_other
+                        for src, dst in [(hard_t, tot_hard_t), (soft_t, tot_soft_t),
+                                         (norm_t, tot_norm_t), (mask_t, tot_mask_t),
+                                         (inversion_t, tot_inversion_t)]:
+                            dst.bp += src.bp
+                            dst.n_intervals += src.n_intervals
+                            dst.max_len = max(dst.max_len, src.max_len)
 
                     chrom = line[1:].split()[0]
                     pos = 0
-
-                    hard_state = RunState()
-                    soft_state = RunState()
-                    norm_state = RunState()
-                    mask_state = RunState()
-                    inversion_state = RunState()
-
+                    hard_state = RunState(); soft_state = RunState(); norm_state = RunState()
+                    mask_state = RunState(); inversion_state = RunState()
                     bp_hard = bp_soft = bp_norm = bp_mask = bp_inversion = bp_other = 0
-
-                    hard_t = TrackStats()
-                    soft_t = TrackStats()
-                    norm_t = TrackStats()
-                    mask_t = TrackStats()
-                    inversion_t = TrackStats()
+                    hard_t = TrackStats(); soft_t = TrackStats(); norm_t = TrackStats()
+                    mask_t = TrackStats(); inversion_t = TrackStats()
                     continue
 
                 for c in line:
@@ -228,47 +186,27 @@ def main():
                     in_mask = in_hard or in_soft
                     in_inversion = c in INVERSION
 
-                    if in_hard:
-                        bp_hard += 1
-                    elif in_soft:
-                        bp_soft += 1
-                    elif in_norm:
-                        bp_norm += 1
-                    else:
-                        bp_other += 1
+                    if in_hard:     bp_hard += 1
+                    elif in_soft:   bp_soft += 1
+                    elif in_norm:   bp_norm += 1
+                    else:           bp_other += 1
+                    if in_mask:     bp_mask += 1
+                    if in_inversion: bp_inversion += 1
 
-                    if in_mask:
-                        bp_mask += 1
-                    if in_inversion:
-                        bp_inversion += 1
-
-                    if in_hard:
-                        open_run(pos, hard_state)
-                    else:
-                        close_run(chrom, pos, hard_state, hard_out, "hardN", hard_t)
-
-                    if in_soft:
-                        open_run(pos, soft_state)
-                    else:
-                        close_run(chrom, pos, soft_state, soft_out, "softacgt", soft_t)
-
-                    if in_norm:
-                        open_run(pos, norm_state)
-                    else:
-                        close_run(chrom, pos, norm_state, norm_out, "normalACGT", norm_t)
-
-                    if in_mask:
-                        open_run(pos, mask_state)
-                    else:
-                        close_run(chrom, pos, mask_state, mask_out, "masked_acgtN", mask_t)
-
-                    if in_inversion:
-                        open_run(pos, inversion_state)
-                    else:
-                        close_run(chrom, pos, inversion_state, inversion_out, "inversion_acgt_allcase", inversion_t)
+                    if in_hard:     open_run(pos, hard_state)
+                    else:           close_run(chrom, pos, hard_state, hard_out, "hardN", hard_t)
+                    if in_soft:     open_run(pos, soft_state)
+                    else:           close_run(chrom, pos, soft_state, soft_out, "softacgt", soft_t)
+                    if in_norm:     open_run(pos, norm_state)
+                    else:           close_run(chrom, pos, norm_state, norm_out, "normalACGT", norm_t)
+                    if in_mask:     open_run(pos, mask_state)
+                    else:           close_run(chrom, pos, mask_state, mask_out, "masked_acgtN", mask_t)
+                    if in_inversion: open_run(pos, inversion_state)
+                    else:           close_run(chrom, pos, inversion_state, inversion_out, "inversion_acgt_allcase", inversion_t)
 
                     pos += 1
 
+        # flush last contig
         if chrom is not None:
             flush_contig(
                 chrom, pos,
@@ -276,40 +214,20 @@ def main():
                 hard_out, soft_out, norm_out, mask_out, inversion_out,
                 hard_t, soft_t, norm_t, mask_t, inversion_t
             )
-
             write_contig_stats(
                 chrom, pos,
                 bp_hard, bp_soft, bp_norm, bp_mask, bp_inversion, bp_other,
                 hard_t, soft_t, norm_t, mask_t, inversion_t
             )
-
             tot_len += pos
-            tot_hard += bp_hard
-            tot_soft += bp_soft
-            tot_norm += bp_norm
-            tot_mask += bp_mask
-            tot_inversion += bp_inversion
-            tot_other += bp_other
-
-            tot_hard_t.bp += hard_t.bp
-            tot_hard_t.n_intervals += hard_t.n_intervals
-            tot_hard_t.max_len = max(tot_hard_t.max_len, hard_t.max_len)
-
-            tot_soft_t.bp += soft_t.bp
-            tot_soft_t.n_intervals += soft_t.n_intervals
-            tot_soft_t.max_len = max(tot_soft_t.max_len, soft_t.max_len)
-
-            tot_norm_t.bp += norm_t.bp
-            tot_norm_t.n_intervals += norm_t.n_intervals
-            tot_norm_t.max_len = max(tot_norm_t.max_len, norm_t.max_len)
-
-            tot_mask_t.bp += mask_t.bp
-            tot_mask_t.n_intervals += mask_t.n_intervals
-            tot_mask_t.max_len = max(tot_mask_t.max_len, mask_t.max_len)
-
-            tot_inversion_t.bp += inversion_t.bp
-            tot_inversion_t.n_intervals += inversion_t.n_intervals
-            tot_inversion_t.max_len = max(tot_inversion_t.max_len, inversion_t.max_len)
+            tot_hard += bp_hard; tot_soft += bp_soft; tot_norm += bp_norm
+            tot_mask += bp_mask; tot_inversion += bp_inversion; tot_other += bp_other
+            for src, dst in [(hard_t, tot_hard_t), (soft_t, tot_soft_t),
+                             (norm_t, tot_norm_t), (mask_t, tot_mask_t),
+                             (inversion_t, tot_inversion_t)]:
+                dst.bp += src.bp
+                dst.n_intervals += src.n_intervals
+                dst.max_len = max(dst.max_len, src.max_len)
 
         def pct_total(x):
             return (100.0 * x / tot_len) if tot_len else 0.0
